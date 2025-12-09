@@ -1,27 +1,23 @@
 {
   "name": "chartink-webhook",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+  "type": "module",
+  "engines": {
+    "node": "24.x"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js",
+    "test": "node test-webhook.js",
+    "deploy": "vercel --prod",
+    "vercel-dev": "vercel dev"
+  },
   "dependencies": {
-    "@supabase/supabase-js": "^2.87.0",
-    "compression": "^1.8.1",
-    "cors": "^2.8.5",
-    "firebase-admin": "^13.6.0",
-    "helmet": "^8.1.0",
-    "ioredis": "^5.8.2",
-    "lru-cache": "^11.2.4",
-    "nanoid": "^5.1.6",
-    "redis": "^5.10.0"
+    "firebase-admin": "^11.11.0",
+    "nanoid": "^5.0.1",
+    "dotenv": "^16.3.1"
   },
   "devDependencies": {
-    "@vercel/node": "^5.5.15",
-    "vercel": "^49.1.2"
+    "vercel": "^34.0.0"
   }
 }
