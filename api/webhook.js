@@ -260,6 +260,8 @@ export default async function handler(req, res) {
       }
     };
 
+    console.log(`📥 Received webhook: ID=${eventId}, DateDir=${dateDirectory}`);
+    console.log(`payload=${JSON.stringify(enhancedPayload)}`);
     // 3. Initialize Firebase with timeout
     const initStart = Date.now();
     
@@ -278,38 +280,11 @@ export default async function handler(req, res) {
     const dbWriteStart = Date.now();
     const db = firebasePool.getDatabase();
     
-    // Get date components for additional organization
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = String(now.getMonth() + 1).padStart(2, '0');
-    const day = String(now.getDate()).padStart(2, '0');
-    const hours = String(now.getHours()).padStart(2, '0');
-    
     // Create multiple storage paths for easy querying
     const writePromises = [
       // Primary: Date-based directory (YYYYMMDD)
       db.ref(`chartink/${dateDirectory}/${eventId}`).set(enhancedPayload),
       
-      // Secondary: Year/Month/Day hierarchy for easy filtering
-      db.ref(`chartink/by_date/${year}/${month}/${day}/${eventId}`).set(enhancedPayload),
-      
-      // Hourly organization (for intra-day analysis)
-      db.ref(`chartink/by_hour/${dateDirectory}/${hours}/${eventId}`).set(enhancedPayload),
-      
-      // Latest scan reference
-      db.ref(`chartink/latest`).set({
-        id: eventId,
-        timestamp,
-        date_directory: dateDirectory,
-        scan_name: payload.scan_name || 'unknown',
-        symbol: payload.symbol || 'unknown',
-        ...payload
-      }),
-      
-      // Scan-type organization (if scan_name exists)
-      ...(payload.scan_name ? [
-        db.ref(`chartink/by_scan/${payload.scan_name}/${dateDirectory}/${eventId}`).set(enhancedPayload)
-      ] : [])
     ];
 
     // Race against timeout
@@ -334,9 +309,6 @@ export default async function handler(req, res) {
       dateDirectory: dateDirectory,
       storagePaths: {
         dateBased: `chartink/${dateDirectory}/${eventId}`,
-        hierarchical: `chartink/by_date/${year}/${month}/${day}/${eventId}`,
-        hourly: `chartink/by_hour/${dateDirectory}/${hours}/${eventId}`,
-        latest: 'chartink/latest'
       },
       timing: {
         total: totalTime,
