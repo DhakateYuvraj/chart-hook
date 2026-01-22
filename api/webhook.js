@@ -6,7 +6,28 @@ import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 
 const Api = require("../lib/RestApi.cjs");
-const { authparams } = require("../cred.cjs");
+const authParamsString = process.env.SHOONYA_USER;
+const authParamsString1 = process.env.SHOONYA_USER_1;
+const authParamsString2 = process.env.SHOONYA_USER_2;
+
+let authparams = {};
+let authparams1 = {};
+let authparams2 = {};
+try {
+  authparams = JSON.parse(authParamsString);
+} catch (error) {
+  console.log("Error in reading SHOONYA_USER", error);
+}
+try {
+  authparams1 = JSON.parse(authParamsString1);
+} catch (error) {
+  console.log("Error in reading SHOONYA_USER_1", error);
+}
+try {
+  authparams2 = JSON.parse(authParamsString2);
+} catch (error) {
+  console.log("Error in reading SHOONYA_USER_2", error);
+}
 
 // Helper to get date in YYYYMMDD format
 function getDateString() {
@@ -96,13 +117,21 @@ const storeInFbRealtime = async (payload, req, res) => {
   });
 };
 
-const placeOrder = async (payload) => {
+const placeOrder = async (payload, userAuthParams, res) => {
   let SIGNAL_TYPE = null;
   const { alert_name = "", stocks: payloadStocks = "" } = payload || {};
   if (alert_name.includes("[Order_CE]")) {
     SIGNAL_TYPE = "CE";
   } else if (alert_name.includes("[Order_PE]")) {
     SIGNAL_TYPE = "PE";
+  }
+
+  if (!SIGNAL_TYPE) {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    return res.status(405).json({
+      success: true,
+      results: `Alert name is not in list ${alert_name}`,
+    });
   }
 
   // Extract stocks safely
@@ -121,7 +150,7 @@ const placeOrder = async (payload) => {
   try {
     // Generate TOTP
     const twoFA = speakeasy.totp({
-      secret: authparams.totp_key,
+      secret: userAuthParams.totp_key,
       encoding: "base32",
       time: Math.floor(Date.now() / 1000),
     });
@@ -132,7 +161,7 @@ const placeOrder = async (payload) => {
     console.log("🔐 Attempting login...");
     const loginResp = await api
       .login({
-        ...authparams,
+        ...userAuthParams,
         twoFA,
       })
       .catch((loginErr) => {
@@ -209,8 +238,9 @@ const placeOrder = async (payload) => {
                   bookprofit_price: latestCandle?.close * 1.1,
                   bookloss_price: latestCandle?.close * 0.9,
                 };
+                console.log("orderparams +++++++++++++++", orderparams);
                 api.place_order(orderparams).then((reply) => {
-                  console.log(reply);
+                  results.push({ stock, success: true, reply: reply });
                 });
               })
               .catch((error) => {
@@ -228,10 +258,11 @@ const placeOrder = async (payload) => {
     }
 
     console.log("\n📊 Processing complete:", results);
-    return {
-      success: results.some((r) => r.success),
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    return res.status(200).json({
+      success: true,
       results,
-    };
+    });
   } catch (error) {
     console.error("❌ Shoonya order flow failed:", error.message);
     console.error("Full error:", error);
@@ -470,8 +501,15 @@ export default async function handler(req, res) {
         message: parseError.message,
       });
     }
-
-    await placeOrder(payload, req, res);
+    if(authparams && authparams.userid){
+      await placeOrder(payload, authparams, res);
+    }
+    if(authparams1 && authparams1.userid){
+      await placeOrder(payload, authparams1, res);
+    }
+    if(authparams2 && authparams2.userid){
+      await placeOrder(payload, authparams2, res);
+    }
     await storeInFbRealtime(payload, req, res);
   } catch (error) {
     console.error("Webhook error:", error);
