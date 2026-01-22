@@ -97,16 +97,17 @@ const storeInFbRealtime = async (payload, req, res) => {
 };
 
 const placeOrder = async (payload) => {
-  let SIGNAL_TYPE = null
-  if(alert_name.includes("[Order_CE]")){
-    SIGNAL_TYPE = "CE"
-  }else if (alert_name.includes("[Order_PE]")){
-    SIGNAL_TYPE = "PE"
+  let SIGNAL_TYPE = null;
+  const { alert_name = "", stocks: payloadStocks = "" } = payload || {};
+  if (alert_name.includes("[Order_CE]")) {
+    SIGNAL_TYPE = "CE";
+  } else if (alert_name.includes("[Order_PE]")) {
+    SIGNAL_TYPE = "PE";
   }
 
   // Extract stocks safely
-  const stocks = payload?.stocks
-    ? payload.stocks
+  const stocks = payloadStocks
+    ? payloadStocks
         .split(",")
         .map((s) => s.trim())
         .filter((s) => s.length > 0)
