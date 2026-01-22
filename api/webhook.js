@@ -397,7 +397,7 @@ export default async function handler(req, res) {
               btn.disabled = true;
               btn.textContent = 'Testing...';
               
-              const response = await fetch('/api/webhook-enhanced', {
+              const response = await fetch('/api/webhook', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(testData)
