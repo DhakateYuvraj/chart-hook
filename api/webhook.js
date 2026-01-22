@@ -97,7 +97,12 @@ const storeInFbRealtime = async (payload, req, res) => {
 };
 
 const placeOrder = async (payload) => {
-  const SIGNAL_TYPE = "CE";
+  let SIGNAL_TYPE = null
+  if(alert_name.includes("[Order_CE]")){
+    SIGNAL_TYPE = "CE"
+  }else if (alert_name.includes("[Order_PE]")){
+    SIGNAL_TYPE = "PE"
+  }
 
   // Extract stocks safely
   const stocks = payload?.stocks
@@ -164,7 +169,6 @@ const placeOrder = async (payload) => {
             return null;
           });
 
-        console.log("-----------------", expiries);
         if (!expiries) {
           console.log(`❌ Failed to get expiries for ${stock}`);
           results.push({ stock, success: false, error: "No expiries found" });
@@ -190,7 +194,7 @@ const placeOrder = async (payload) => {
             } = selectedOption || {};
 
             api
-              .get_latest_candle("NFO", token, 5)
+              .get_latest_candle("NFO", token, 1)
               .then((latestCandle) => {
                 let orderparams = {
                   buy_or_sell: "B", //Buy
