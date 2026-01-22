@@ -448,8 +448,8 @@ POST ${req.headers.host}/api/read
 Content-Type: application/json
 
 {
-  "date": "20251209",
-  "scan_name": "8.13 + 5.1 R2 (ANY)",
+  "date": "20260120",
+  "scan_name": "temp_testing",
   "symbol": "RELIANCE",
   "limit": 50
 }

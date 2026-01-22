@@ -1,42 +1,271 @@
-import firebasePool from '../lib/firebase-pool.js';
-import { nanoid } from 'nanoid';
+import firebasePool from "../lib/firebase-pool.js";
+import { nanoid } from "nanoid";
+import speakeasy from "speakeasy";
+import { createRequire } from "module";
+
+const require = createRequire(import.meta.url);
+
+const Api = require("../lib/RestApi.cjs");
+const { authparams } = require("../cred.cjs");
 
 // Helper to get date in YYYYMMDD format
 function getDateString() {
   const now = new Date();
   const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  const day = String(now.getDate()).padStart(2, '0');
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
   return `${year}${month}${day}`;
 }
 
+const storeInFbRealtime = async (payload, req, res) => {
+  const startTime = Date.now();
+  let firebaseInitTime = 0;
+  let dbWriteTime = 0;
+  const sourceDir = "chartink";
+  // 2. Generate metadata and date directory
+  const eventId = nanoid(10);
+  const timestamp = Date.now();
+  const dateDirectory = getDateString(); // YYYYMMDD format
+
+  const enhancedPayload = {
+    ...payload,
+    _metadata: {
+      id: eventId,
+      received_at: timestamp,
+      date_directory: dateDirectory,
+      source: sourceDir,
+      ip:
+        req.headers["x-forwarded-for"] || req.headers["x-real-ip"] || "unknown",
+    },
+  };
+
+  console.log(`📥 Received webhook: ID=${eventId}, DateDir=${dateDirectory}`);
+  console.log(`payload=${JSON.stringify(enhancedPayload)}`);
+  // 3. Initialize Firebase with timeout
+  const initStart = Date.now();
+
+  const initTimeout = new Promise((_, reject) => {
+    setTimeout(
+      () => reject(new Error("Firebase initialization timeout (3s)")),
+      3000,
+    );
+  });
+
+  const app = await Promise.race([firebasePool.initialize(), initTimeout]);
+
+  firebaseInitTime = Date.now() - initStart;
+
+  // 4. Store in Firebase with date-based organization
+  const dbWriteStart = Date.now();
+  const db = firebasePool.getDatabase();
+
+  // Create multiple storage paths for easy querying
+  const writePromises = [
+    // Primary: Date-based directory (YYYYMMDD)
+    db.ref(`${sourceDir}/${dateDirectory}/${eventId}`).set(enhancedPayload),
+  ];
+
+  // Race against timeout
+  const writeTimeout = new Promise((_, reject) => {
+    setTimeout(() => reject(new Error("Database write timeout (4s)")), 4000);
+  });
+
+  await Promise.race([Promise.all(writePromises), writeTimeout]);
+
+  dbWriteTime = Date.now() - dbWriteStart;
+  const totalTime = Date.now() - startTime;
+
+  // 5. Success response
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  return res.status(200).json({
+    success: true,
+    id: eventId,
+    timestamp,
+    dateDirectory: dateDirectory,
+    storagePaths: {
+      dateBased: `${sourceDir}/${dateDirectory}/${eventId}`,
+    },
+    timing: {
+      total: totalTime,
+      firebase_init: firebaseInitTime,
+      db_write: dbWriteTime,
+      remaining_timeout: 10000 - totalTime,
+    },
+    stored: true,
+    note: totalTime > 8000 ? "⚠️ Close to timeout limit" : "✅ Within limits",
+  });
+};
+
+const placeOrder = async (payload) => {
+  const SIGNAL_TYPE = "CE";
+
+  // Extract stocks safely
+  const stocks = payload?.stocks
+    ? payload.stocks
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0)
+    : [];
+
+  if (!stocks.length) {
+    console.log("❌ No stocks received");
+    return { success: false, message: "No stocks received" };
+  }
+
+  try {
+    // Generate TOTP
+    const twoFA = speakeasy.totp({
+      secret: authparams.totp_key,
+      encoding: "base32",
+      time: Math.floor(Date.now() / 1000),
+    });
+
+    const api = new Api({});
+
+    // LOGIN with proper error handling
+    console.log("🔐 Attempting login...");
+    const loginResp = await api
+      .login({
+        ...authparams,
+        twoFA,
+      })
+      .catch((loginErr) => {
+        console.error("❌ Login failed:", loginErr.message);
+        throw new Error(`Login failed: ${loginErr.message}`);
+      });
+
+    if (!loginResp || loginResp.stat !== "Ok") {
+      console.error("❌ Invalid login response:", loginResp);
+      throw new Error(
+        `Login response error: ${loginResp?.emsg || "Unknown error"}`,
+      );
+    }
+
+    console.log(
+      "✅ Login success:",
+      loginResp.susertoken ? "Token received" : "No token",
+    );
+
+    // Process stocks sequentially
+    const results = [];
+
+    for (const stock of stocks) {
+      try {
+        console.log(`\n📈 Processing stock: ${stock}`);
+
+        // Get future expiries
+        const expiries = await api
+          .get_future_expiries(stock, "NFO")
+          .catch((err) => {
+            console.error(
+              `⚠️ Error fetching expiries for ${stock}:`,
+              err.message,
+            );
+            return null;
+          });
+
+        console.log("-----------------", expiries);
+        if (!expiries) {
+          console.log(`❌ Failed to get expiries for ${stock}`);
+          results.push({ stock, success: false, error: "No expiries found" });
+          continue;
+        }
+
+        api.get_quotes("NFO", expiries.token).then((reply) => {
+          let optionParams = {
+            tsym: reply.tsym, // Trading symbol (URL encode if needed: encodeURIComponent("M&M"))
+            exch: "NFO", // Exchange (NFO for NSE F&O)
+            strprc: reply.lp, // Mid price for strike selection
+            cnt: 1, // 5 strikes on each side (total 20 contracts: 5CE + 5PE on each side)
+          };
+          api.get_option_chain(optionParams).then((reply) => {
+            const selectedOption =
+              reply?.values?.filter((item) => item.optt === SIGNAL_TYPE)?.[0] ||
+              {};
+            const {
+              exch = "NFO",
+              tsym = "",
+              token = "",
+              ls = 0,
+            } = selectedOption || {};
+
+            api
+              .get_latest_candle("NFO", token, 5)
+              .then((latestCandle) => {
+                let orderparams = {
+                  buy_or_sell: "B", //Buy
+                  product_type: "B", //BRACKET ORDER
+                  exchange: exch,
+                  tradingsymbol: tsym,
+                  quantity: ls,
+                  discloseqty: 0,
+                  price_type: "LMT",
+                  price: latestCandle?.close,
+                  bookprofit_price: latestCandle?.close * 1.1,
+                  bookloss_price: latestCandle?.close * 0.9,
+                };
+                api.place_order(orderparams).then((reply) => {
+                  console.log(reply);
+                });
+              })
+              .catch((error) => {
+                console.error("Error:", error.message);
+              });
+          });
+        });
+      } catch (stockError) {
+        console.error(`❌ Error processing ${stock}:`, stockError.message);
+        results.push({ stock, success: false, error: stockError.message });
+      }
+
+      // Add delay between stocks to avoid rate limiting
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+
+    console.log("\n📊 Processing complete:", results);
+    return {
+      success: results.some((r) => r.success),
+      results,
+    };
+  } catch (error) {
+    console.error("❌ Shoonya order flow failed:", error.message);
+    console.error("Full error:", error);
+
+    return {
+      success: false,
+      error: error.message,
+      stack: process.env.NODE_ENV === "development" ? error.stack : undefined,
+    };
+  }
+};
+
 export default async function handler(req, res) {
   // Handle OPTIONS for CORS
-  if (req.method === 'OPTIONS') {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === "OPTIONS") {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
     return res.status(200).end();
   }
 
   // Handle GET request - Show simple HTML status page
-  if (req.method === 'GET') {
+  if (req.method === "GET") {
     const startTime = Date.now();
     const todayDate = getDateString();
-    
+
     try {
-      // Test Firebase connection
       const firebaseTest = await firebasePool.testConnection();
       const connectionTime = Date.now() - startTime;
-      
+
+      // Test Firebase connection
       // Get environment info
       const envInfo = {
         nodeVersion: process.version,
         firebaseConfigured: !!process.env.FIREBASE_SERVICE_ACCOUNT,
-        firebaseUrl: process.env.FIREBASE_DATABASE_URL || 'Not set',
-        todayDate: todayDate
+        firebaseUrl: process.env.FIREBASE_DATABASE_URL || "Not set",
+        todayDate: todayDate,
       };
-      
+
       // Simple HTML response
       const html = `
       <!DOCTYPE html>
@@ -110,8 +339,8 @@ export default async function handler(req, res) {
         <p>Status: <strong>Online</strong></p>
         <p>Today's Date: <code>${todayDate}</code></p>
         
-        <div class="status ${firebaseTest.connected ? 'success' : 'error'}">
-          <h3>Firebase Connection: ${firebaseTest.connected ? '✅ Connected' : '❌ Failed'}</h3>
+        <div class="status ${firebaseTest.connected ? "success" : "error"}">
+          <h3>Firebase Connection: ${firebaseTest.connected ? "✅ Connected" : "❌ Failed"}</h3>
           <p>${firebaseTest.message}</p>
           <small>Connection time: ${connectionTime}ms</small>
         </div>
@@ -129,15 +358,15 @@ export default async function handler(req, res) {
           <p><strong>POST</strong> <code>${req.headers.host}/api/webhook</code> - Store data</p>
           
           <h4>Example POST request:</h4>
-          <pre>curl -X POST ${req.headers.origin || 'https://' + req.headers.host}/api/webhook \\
+          <pre>curl -X POST ${req.headers.origin || "https://" + req.headers.host}/api/webhook \\
   -H "Content-Type: application/json" \\
   -d '{
-    "alert_name": "Alert for 8.13 + 5.1 R2 (ANY)",
-    "scan_name": "8.13 + 5.1 R2 (ANY)",
+    "alert_name": "tempTesting",
+    "scan_name": "tempTesting",
     "scan_url": "8-13-5-1-r2-any",
-    "stocks": "HYUNDAI,KRN,CELLO,PPLPHARMA,PRINCEPIPE,AUBANK,ADANIENSOL,JWL,TITAGARH,EDELWEISS,DLF,INDIANB,TANLA,TORNTPOWER,ZYDUSLIFE,JINDALSTEL,GENUSPOWER,TATASTEEL,PATANJALI,LUPIN",
-    "trigger_prices": "1911.4,769.45,623.75,208,327.3,707.85,890.75,406,915.5,103.01,784.3,598.7,581,1432.7,915.2,967.05,371.45,165.09,1732,1999.2",
-    "triggered_at": "9:33 am",
+    "stocks": "HYUNDAI,LUPIN",
+    "trigger_prices": "191,199",
+    "triggered_at": "11:07 am",
     "webhook_url": "https://dummy-node-api-da9c.vercel.app/api/uploadData"
 }'</pre>
           
@@ -154,12 +383,12 @@ export default async function handler(req, res) {
         <script>
           async function testWebhook() {
             const testData = {
-    "alert_name": "Alert for 8.13 + 5.1 R2 (ANY)",
-    "scan_name": "8.13 + 5.1 R2 (ANY)",
+    "alert_name": "tempTesting",
+    "scan_name": "tempTesting",
     "scan_url": "8-13-5-1-r2-any",
-    "stocks": "HYUNDAI,KRN,CELLO,PPLPHARMA,PRINCEPIPE,AUBANK,ADANIENSOL,JWL,TITAGARH,EDELWEISS,DLF,INDIANB,TANLA,TORNTPOWER,ZYDUSLIFE,JINDALSTEL,GENUSPOWER,TATASTEEL,PATANJALI,LUPIN",
-    "trigger_prices": "1911.4,769.45,623.75,208,327.3,707.85,890.75,406,915.5,103.01,784.3,598.7,581,1432.7,915.2,967.05,371.45,165.09,1732,1999.2",
-    "triggered_at": "9:33 am",
+    "stocks": "HYUNDAI,LUPIN",
+    "trigger_prices": "191,199",
+    "triggered_at": "11:07 am",
     "webhook_url": "https://dummy-node-api-da9c.vercel.app/api/uploadData"
 };
             
@@ -168,7 +397,7 @@ export default async function handler(req, res) {
               btn.disabled = true;
               btn.textContent = 'Testing...';
               
-              const response = await fetch('/api/webhook', {
+              const response = await fetch('/api/webhook-enhanced', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(testData)
@@ -191,13 +420,12 @@ export default async function handler(req, res) {
       </body>
       </html>
       `;
-      
-      res.setHeader('Content-Type', 'text/html');
+
+      res.setHeader("Content-Type", "text/html");
       res.status(200).send(html);
-      
     } catch (error) {
-      console.error('GET handler error:', error);
-      
+      console.error("GET handler error:", error);
+
       const errorHtml = `
       <html>
       <body style="font-family: Arial; padding: 20px;">
@@ -209,132 +437,55 @@ export default async function handler(req, res) {
       </body>
       </html>
       `;
-      
-      res.setHeader('Content-Type', 'text/html');
+
+      res.setHeader("Content-Type", "text/html");
       res.status(500).send(errorHtml);
     }
-    
+
     return;
   }
 
   // Handle POST request
-  if (req.method !== 'POST') {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    return res.status(405).json({ 
-      error: 'Method not allowed',
-      allowed: ['POST', 'GET', 'OPTIONS']
+  if (req.method !== "POST") {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    return res.status(405).json({
+      error: "Method not allowed",
+      allowed: ["POST", "GET", "OPTIONS"],
     });
   }
-
-  const startTime = Date.now();
-  let firebaseInitTime = 0;
-  let dbWriteTime = 0;
 
   try {
     // 1. Parse and validate JSON
     let payload;
     try {
-      payload = typeof req.body === 'string' 
-        ? JSON.parse(req.body) 
-        : req.body;
+      payload = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
     } catch (parseError) {
       return res.status(400).json({
-        error: 'Invalid JSON payload',
-        message: parseError.message
+        error: "Invalid JSON payload",
+        message: parseError.message,
       });
     }
 
-    // 2. Generate metadata and date directory
-    const eventId = nanoid(10);
-    const timestamp = Date.now();
-    const dateDirectory = getDateString(); // YYYYMMDD format
-    
-    const enhancedPayload = {
-      ...payload,
-      _metadata: {
-        id: eventId,
-        received_at: timestamp,
-        date_directory: dateDirectory,
-        source: 'chartink',
-        ip: req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || 'unknown'
-      }
-    };
-
-    console.log(`📥 Received webhook: ID=${eventId}, DateDir=${dateDirectory}`);
-    console.log(`payload=${JSON.stringify(enhancedPayload)}`);
-    // 3. Initialize Firebase with timeout
-    const initStart = Date.now();
-    
-    const initTimeout = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('Firebase initialization timeout (3s)')), 3000);
-    });
-    
-    const app = await Promise.race([
-      firebasePool.initialize(),
-      initTimeout
-    ]);
-    
-    firebaseInitTime = Date.now() - initStart;
-
-    // 4. Store in Firebase with date-based organization
-    const dbWriteStart = Date.now();
-    const db = firebasePool.getDatabase();
-    
-    // Create multiple storage paths for easy querying
-    const writePromises = [
-      // Primary: Date-based directory (YYYYMMDD)
-      db.ref(`chartink/${dateDirectory}/${eventId}`).set(enhancedPayload),
-      
-    ];
-
-    // Race against timeout
-    const writeTimeout = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('Database write timeout (4s)')), 4000);
-    });
-
-    await Promise.race([
-      Promise.all(writePromises),
-      writeTimeout
-    ]);
-    
-    dbWriteTime = Date.now() - dbWriteStart;
-    const totalTime = Date.now() - startTime;
-
-    // 5. Success response
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    return res.status(200).json({
-      success: true,
-      id: eventId,
-      timestamp,
-      dateDirectory: dateDirectory,
-      storagePaths: {
-        dateBased: `chartink/${dateDirectory}/${eventId}`,
-      },
-      timing: {
-        total: totalTime,
-        firebase_init: firebaseInitTime,
-        db_write: dbWriteTime,
-        remaining_timeout: 10000 - totalTime
-      },
-      stored: true,
-      note: totalTime > 8000 ? '⚠️ Close to timeout limit' : '✅ Within limits'
-    });
-
+    await placeOrder(payload, req, res);
+    await storeInFbRealtime(payload, req, res);
   } catch (error) {
-    console.error('Webhook error:', error);
-    
+    console.error("Webhook error:", error);
+    const startTime = Date.now();
     const elapsed = Date.now() - startTime;
     const timeLeft = 10000 - elapsed;
-    
+
     const statusCode = timeLeft < 100 ? 504 : 500;
-    
-    res.setHeader('Access-Control-Allow-Origin', '*');
+
+    res.setHeader("Access-Control-Allow-Origin", "*");
     return res.status(statusCode).json({
-      error: 'Processing failed',
+      error: "Processing failed",
       message: error.message,
       elapsed,
       timeLeft,
-      suggestion: timeLeft < 1000 ? 'Consider using fallback storage' : 'Check Firebase configuration'
+      suggestion:
+        timeLeft < 1000
+          ? "Consider using fallback storage"
+          : "Check Firebase configuration",
     });
   }
 }
