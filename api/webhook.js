@@ -120,9 +120,13 @@ const storeInFbRealtime = async (payload, req, res) => {
 const placeOrder = async (payload, userAuthParams, res) => {
   let SIGNAL_TYPE = null;
   const { alert_name = "", stocks: payloadStocks = "" } = payload || {};
-  if (alert_name.includes("[Order_CE]")) {
+  if(alert_name === 'PEBuy'){
+    SIGNAL_TYPE = "PE";
+  }else if(alert_name === 'CEBuy'){
     SIGNAL_TYPE = "CE";
-  } else if (alert_name.includes("[Order_PE]")) {
+  }else if (alert_name?.toLowerCase()?.includes("buy")) {
+    SIGNAL_TYPE = "CE";
+  } else if (alert_name?.toLowerCase()?.includes("sell")) {
     SIGNAL_TYPE = "PE";
   }
 
