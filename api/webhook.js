@@ -19,15 +19,16 @@ try {
   console.log("Error in reading SHOONYA_USER", error);
 }
 try {
-  authparams1 = JSON.parse(authParamsString1);
+  authparams1 = authParamsString1 ? JSON.parse(authParamsString1) : null;
 } catch (error) {
   console.log("Error in reading SHOONYA_USER_1", error);
 }
 try {
-  authparams2 = JSON.parse(authParamsString2);
+  authparams2 = authParamsString2 ? JSON.parse(authParamsString2) : null;
 } catch (error) {
   console.log("Error in reading SHOONYA_USER_2", error);
 }
+
 
 // Helper to get date in YYYYMMDD format
 function getDateString() {
@@ -120,13 +121,13 @@ const storeInFbRealtime = async (payload, req, res) => {
 const placeOrder = async (payload, userAuthParams, res) => {
   let SIGNAL_TYPE = null;
   const { alert_name = "", stocks: payloadStocks = "" } = payload || {};
-  if(alert_name === 'PEBuy'){
-    SIGNAL_TYPE = "PE";
-  }else if(alert_name === 'CEBuy'){
+  const ce_condition =
+    alert_name.startsWith("CE-23.1") || alert_name.startsWith("CE-23.3");
+  const pe_condition =
+    alert_name.startsWith("PE-23.2") || alert_name.startsWith("PE-23.4");
+  if (ce_condition) {
     SIGNAL_TYPE = "CE";
-  }else if (alert_name?.toLowerCase()?.includes("buy")) {
-    SIGNAL_TYPE = "CE";
-  } else if (alert_name?.toLowerCase()?.includes("sell")) {
+  } else if (pe_condition) {
     SIGNAL_TYPE = "PE";
   }
 
@@ -160,6 +161,7 @@ const placeOrder = async (payload, userAuthParams, res) => {
     });
 
     const api = new Api({});
+    api.logout();
 
     // LOGIN with proper error handling
     console.log("🔐 Attempting login...");
@@ -226,10 +228,12 @@ const placeOrder = async (payload, userAuthParams, res) => {
               token = "",
               ls = 0,
             } = selectedOption || {};
+            console.log("selectedOption +++++++++++++++", selectedOption);
 
             api
               .get_latest_candle("NFO", token, 1)
               .then((latestCandle) => {
+            console.log("latestCandlelatestCandlelatestCandlelatestCandle +++++++++++++++", latestCandle);
                 let orderparams = {
                   buy_or_sell: "B", //Buy
                   product_type: "B", //BRACKET ORDER
@@ -245,6 +249,8 @@ const placeOrder = async (payload, userAuthParams, res) => {
                 console.log("orderparams +++++++++++++++", orderparams);
                 api.place_order(orderparams).then((reply) => {
                   results.push({ stock, success: true, reply: reply });
+                  api.logout();
+                  return
                 });
               })
               .catch((error) => {
@@ -288,202 +294,299 @@ export default async function handler(req, res) {
     return res.status(200).end();
   }
 
-  // Handle GET request - Show simple HTML status page
-  if (req.method === "GET") {
-    const startTime = Date.now();
-    const todayDate = getDateString();
+// Handle GET request - Show simple HTML status page
+if (req.method === "GET") {
+  const startTime = Date.now();
+  const todayDate = getDateString();
 
-    try {
-      const firebaseTest = await firebasePool.testConnection();
-      const connectionTime = Date.now() - startTime;
+  try {
+    const firebaseTest = await firebasePool.testConnection();
+    const connectionTime = Date.now() - startTime;
 
-      // Test Firebase connection
-      // Get environment info
-      const envInfo = {
-        nodeVersion: process.version,
-        firebaseConfigured: !!process.env.FIREBASE_SERVICE_ACCOUNT,
-        firebaseUrl: process.env.FIREBASE_DATABASE_URL || "Not set",
-        todayDate: todayDate,
-      };
+    const envInfo = {
+      nodeVersion: process.version,
+      firebaseConfigured: !!process.env.FIREBASE_SERVICE_ACCOUNT,
+      firebaseUrl: process.env.FIREBASE_DATABASE_URL || "Not set",
+      todayDate: todayDate,
+    };
 
-      // Simple HTML response
-      const html = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <title>Chartink Webhook API</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <style>
-          body {
-            font-family: Arial, sans-serif;
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 20px;
-            line-height: 1.6;
-          }
-          .status {
-            padding: 15px;
-            margin: 10px 0;
-            border-radius: 5px;
-          }
-          .success {
-            background: #d4edda;
-            border-left: 5px solid #28a745;
-          }
-          .error {
-            background: #f8d7da;
-            border-left: 5px solid #dc3545;
-          }
-          .warning {
-            background: #fff3cd;
-            border-left: 5px solid #ffc107;
-          }
-          .info {
-            background: #d1ecf1;
-            border-left: 5px solid #17a2b8;
-          }
-          code {
-            background: #f4f4f4;
-            padding: 2px 5px;
-            border-radius: 3px;
-            font-family: monospace;
-          }
-          pre {
-            background: #f8f9fa;
-            padding: 10px;
-            border-radius: 5px;
-            overflow-x: auto;
-          }
-          .endpoint {
-            margin: 20px 0;
-            padding: 15px;
-            background: #e9ecef;
-            border-radius: 5px;
-          }
-          .test-btn {
-            background: #007bff;
-            color: white;
-            border: none;
-            padding: 10px 15px;
-            border-radius: 5px;
-            cursor: pointer;
-            margin-top: 10px;
-          }
-          .test-btn:hover {
-            background: #0056b3;
-          }
-        </style>
-      </head>
-      <body>
-        <h1>📊 Chartink Webhook API</h1>
-        <p>Status: <strong>Online</strong></p>
-        <p>Today's Date: <code>${todayDate}</code></p>
-        
-        <div class="status ${firebaseTest.connected ? "success" : "error"}">
-          <h3>Firebase Connection: ${firebaseTest.connected ? "✅ Connected" : "❌ Failed"}</h3>
-          <p>${firebaseTest.message}</p>
-          <small>Connection time: ${connectionTime}ms</small>
-        </div>
-        
-        <div class="status info">
-          <h3>📦 Storage Structure</h3>
-          <p>Data is organized by date in format: <code>YYYYMMDD</code></p>
-          <p>Today's directory: <code>chartink/${todayDate}/</code></p>
-          <p>Example path: <code>chartink/${todayDate}/scan_${Date.now()}_abc123</code></p>
-        </div>
-        
-        <div class="endpoint">
-          <h3>📬 API Endpoints</h3>
-          <p><strong>GET</strong> <code>${req.headers.host}/api/webhook</code> - This page</p>
-          <p><strong>POST</strong> <code>${req.headers.host}/api/webhook</code> - Store data</p>
-          
-          <h4>Example POST request:</h4>
-          <pre>curl -X POST ${req.headers.origin || "https://" + req.headers.host}/api/webhook \\
+    const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Chartink Webhook API</title>
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+      <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    </head>
+    <body class="bg-light">
+      <div class="container mt-4">
+        <div class="row justify-content-center">
+          <div class="col-lg-10">
+            <div class="card shadow">
+              <div class="card-header bg-primary text-white">
+                <h1 class="h4 mb-0"><i class="fas fa-chart-line me-2"></i>Chartink Webhook API</h1>
+              </div>
+              
+              <div class="card-body">
+                <!-- Status Info -->
+                <div class="row mb-4">
+                  <div class="col-md-6">
+                    <div class="alert ${firebaseTest.connected ? 'alert-success' : 'alert-danger'}">
+                      <h4 class="alert-heading">
+                        <i class="fas ${firebaseTest.connected ? 'fa-check-circle' : 'fa-times-circle'} me-2"></i>
+                        Firebase: ${firebaseTest.connected ? 'Connected' : 'Failed'}
+                      </h4>
+                      <p class="mb-1">${firebaseTest.message}</p>
+                      <small class="text-muted">Connection time: ${connectionTime}ms</small>
+                    </div>
+                  </div>
+                  <div class="col-md-6">
+                    <div class="alert alert-info">
+                      <h4 class="alert-heading"><i class="fas fa-database me-2"></i>Storage</h4>
+                      <p class="mb-1">Today: <code>chartink/${todayDate}/</code></p>
+                      <p class="mb-0">Format: <code>YYYYMMDD</code></p>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Test Section -->
+                <div class="card mb-4">
+                  <div class="card-header bg-secondary text-white">
+                    <h3 class="h5 mb-0"><i class="fas fa-vial me-2"></i>Test Webhook</h3>
+                  </div>
+                  <div class="card-body">
+                    <div class="mb-3">
+                      <label class="form-label fw-bold">JSON Data:</label>
+                      <textarea 
+                        id="jsonInput" 
+                        class="form-control font-monospace" 
+                        rows="10"
+                        placeholder='Enter JSON data here...'></textarea>
+                    </div>
+                    
+                    <div class="d-flex flex-wrap gap-2 mb-3">
+                      <button class="btn btn-primary" onclick="loadExample()">
+                        <i class="fas fa-code me-1"></i>Load Example
+                      </button>
+                      <button class="btn btn-secondary" onclick="clearData()">
+                        <i class="fas fa-eraser me-1"></i>Clear
+                      </button>
+                      <button class="btn btn-info text-white" onclick="formatJSON()">
+                        <i class="fas fa-indent me-1"></i>Format JSON
+                      </button>
+                      <button class="btn btn-warning" onclick="validateJSON()">
+                        <i class="fas fa-check-circle me-1"></i>Validate
+                      </button>
+                    </div>
+                    
+                    <div class="d-grid">
+                      <button class="btn btn-success btn-lg" onclick="testWebhook()" id="testBtn">
+                        <i class="fas fa-paper-plane me-2"></i>Test Webhook
+                      </button>
+                    </div>
+                    
+                    <div id="responseBox" class="mt-3"></div>
+                  </div>
+                </div>
+
+                <!-- Endpoints -->
+                <div class="card mb-4">
+                  <div class="card-header bg-dark text-white">
+                    <h3 class="h5 mb-0"><i class="fas fa-plug me-2"></i>API Endpoints</h3>
+                  </div>
+                  <div class="card-body">
+                    <ul class="list-group list-group-flush">
+                      <li class="list-group-item">
+                        <span class="badge bg-primary me-2">GET</span>
+                        <code>${req.headers.host}/api/webhook</code> - This page
+                      </li>
+                      <li class="list-group-item">
+                        <span class="badge bg-success me-2">POST</span>
+                        <code>${req.headers.host}/api/webhook</code> - Store data
+                      </li>
+                    </ul>
+                    
+                    <div class="mt-3">
+                      <h6 class="fw-bold">Example cURL:</h6>
+                      <pre class="bg-dark text-light p-3 rounded"><code>curl -X POST ${req.headers.origin || "https://" + req.headers.host}/api/webhook \\
   -H "Content-Type: application/json" \\
   -d '{
-    "alert_name": "tempTesting",
-    "scan_name": "tempTesting",
-    "scan_url": "8-13-5-1-r2-any",
-    "stocks": "HYUNDAI,LUPIN",
-    "trigger_prices": "191,199",
+    "alert_name": "CE-23.3 StockFnO Buy Yuvraj",
+    "scan_name": "CE-23.3 StockFnO Buy Yuvraj",
+    "scan_url": "CE-23.3 StockFnO Buy Yuvraj",
+    "stocks": "INFY",
+    "trigger_prices": "1670",
     "triggered_at": "11:07 am",
-    "webhook_url": "https://dummy-node-api-da9c.vercel.app/api/uploadData"
-}'</pre>
-          
-          <button class="test-btn" onclick="testWebhook()">Test Webhook Now</button>
+    "webhook_url": "https://chartink-webhook.vercel.app/api/webhook"
+}'</code></pre>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Config Info -->
+                <div class="card">
+                  <div class="card-header bg-warning">
+                    <h3 class="h5 mb-0"><i class="fas fa-cog me-2"></i>Configuration</h3>
+                  </div>
+                  <div class="card-body">
+                    <pre class="mb-0"><code>${JSON.stringify(envInfo, null, 2)}</code></pre>
+                  </div>
+                </div>
+                
+                <div class="text-center mt-4 text-muted">
+                  <small>Last checked: ${new Date().toISOString()}</small>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
+      </div>
+
+      <script>
+        // Initialize with example data
+        const exampleData = ${JSON.stringify({
+          alert_name: "CE-23.3 StockFnO Buy Yuvraj",
+          scan_name: "CE-23.3 StockFnO Buy Yuvraj",
+          scan_url: "CE-23.3 StockFnO Buy Yuvraj",
+          stocks: "INFY",
+          trigger_prices: "1670",
+          triggered_at: "11:07 am",
+          webhook_url: "https://chartink-webhook.vercel.app/api/webhook"
+        }, null, 2)};
         
-        <div class="status warning">
-          <h3>⚙️ Configuration</h3>
-          <pre>${JSON.stringify(envInfo, null, 2)}</pre>
-        </div>
+        document.getElementById('jsonInput').value = JSON.stringify(exampleData, null, 2);
         
-        <p><small>Last checked: ${new Date().toISOString()}</small></p>
-        
-        <script>
-          async function testWebhook() {
-            const testData = {
-    "alert_name": "tempTesting",
-    "scan_name": "tempTesting",
-    "scan_url": "8-13-5-1-r2-any",
-    "stocks": "HYUNDAI,LUPIN",
-    "trigger_prices": "191,199",
-    "triggered_at": "11:07 am",
-    "webhook_url": "https://dummy-node-api-da9c.vercel.app/api/uploadData"
-};
-            
+        // Helper functions
+        const helpers = {
+          loadExample: () => document.getElementById('jsonInput').value = JSON.stringify(exampleData, null, 2),
+          clearData: () => document.getElementById('jsonInput').value = '',
+          formatJSON: () => {
             try {
-              const btn = event.target;
-              btn.disabled = true;
-              btn.textContent = 'Testing...';
-              
-              const response = await fetch('/api/webhook', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(testData)
-              });
-              
-              const result = await response.json();
-              
-              alert('✅ Test Successful!\\nScan ID: ' + result.id + '\\nStored in: chartink/' + result.dateDirectory);
-              
-            } catch (error) {
-              alert('❌ Test Failed: ' + error.message);
-            } finally {
-              if (event.target) {
-                event.target.disabled = false;
-                event.target.textContent = 'Test Webhook Now';
-              }
+              const textarea = document.getElementById('jsonInput');
+              textarea.value = JSON.stringify(JSON.parse(textarea.value), null, 2);
+              helpers.showMessage('JSON formatted successfully!', 'success');
+            } catch (e) {
+              helpers.showMessage('Invalid JSON: ' + e.message, 'danger');
             }
+          },
+          validateJSON: () => {
+            try {
+              JSON.parse(document.getElementById('jsonInput').value);
+              helpers.showMessage('Valid JSON!', 'success');
+            } catch (e) {
+              helpers.showMessage('Invalid JSON: ' + e.message, 'danger');
+            }
+          },
+          showMessage: (text, type) => {
+            const box = document.getElementById('responseBox');
+            box.innerHTML = \`
+              <div class="alert alert-\${type} alert-dismissible fade show">
+                <div class="d-flex align-items-center">
+                  <i class="fas fa-\${type === 'success' ? 'check-circle' : 'exclamation-circle'} me-2"></i>
+                  <div>\${text}</div>
+                </div>
+                <button type="button" class="btn-close" onclick="this.parentElement.remove()"></button>
+              </div>
+            \`;
+            if (type === 'success') setTimeout(() => box.innerHTML = '', 3000);
           }
-        </script>
-      </body>
-      </html>
-      `;
+        };
+        
+        // Assign to global scope
+        Object.assign(window, helpers);
+        
+        // Main test function
+        async function testWebhook() {
+          const textarea = document.getElementById('jsonInput');
+          const btn = document.getElementById('testBtn');
+          let data;
+          
+          try {
+            data = JSON.parse(textarea.value);
+          } catch (e) {
+            helpers.showMessage('Invalid JSON: ' + e.message, 'danger');
+            return;
+          }
+          
+          const originalHTML = btn.innerHTML;
+          btn.disabled = true;
+          btn.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Testing...';
+          
+          try {
+            const response = await fetch('/api/webhook', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(data)
+            });
+            
+            const result = await response.json();
+            
+            if (response.ok) {
+              helpers.showMessage(
+                \`✅ Success! ID: \${result.id || 'N/A'} | Path: chartink/\${result.dateDirectory || 'N/A'}\`,
+                'success'
+              );
+            } else {
+              helpers.showMessage(\`❌ Error: \${result.error || response.statusText}\`, 'danger');
+            }
+          } catch (error) {
+            helpers.showMessage('Network error: ' + error.message, 'danger');
+          } finally {
+            btn.disabled = false;
+            btn.innerHTML = originalHTML;
+          }
+        }
+        
+        // Keyboard shortcut
+        document.getElementById('jsonInput').addEventListener('keydown', (e) => {
+          if (e.ctrlKey && e.key === 'Enter') testWebhook();
+        });
+      </script>
+    </body>
+    </html>
+    `;
 
-      res.setHeader("Content-Type", "text/html");
-      res.status(200).send(html);
-    } catch (error) {
-      console.error("GET handler error:", error);
+    res.setHeader("Content-Type", "text/html");
+    res.status(200).send(html);
+  } catch (error) {
+    console.error("GET handler error:", error);
 
-      const errorHtml = `
-      <html>
-      <body style="font-family: Arial; padding: 20px;">
-        <h1>⚠️ Chartink Webhook Status</h1>
-        <div style="background: #ffebee; padding: 15px; border-radius: 5px;">
-          <h3>Error: ${error.message}</h3>
-          <p>Check Firebase configuration and try again.</p>
+    const html = `
+    <html class="h-100">
+    <head>
+      <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    </head>
+    <body class="h-100 bg-light">
+      <div class="h-100 d-flex align-items-center justify-content-center">
+        <div class="card shadow" style="width: 500px;">
+          <div class="card-header bg-danger text-white">
+            <h4 class="mb-0"><i class="fas fa-exclamation-triangle me-2"></i>API Error</h4>
+          </div>
+          <div class="card-body">
+            <div class="alert alert-danger">
+              <h5 class="alert-heading">${error.message}</h5>
+              <p class="mb-0">Check Firebase configuration and try again.</p>
+            </div>
+            <button class="btn btn-primary w-100" onclick="location.reload()">
+              <i class="fas fa-redo me-2"></i>Try Again
+            </button>
+          </div>
         </div>
-      </body>
-      </html>
-      `;
+      </div>
+      <script>
+        setTimeout(() => location.reload(), 5000);
+      </script>
+    </body>
+    </html>
+    `;
 
-      res.setHeader("Content-Type", "text/html");
-      res.status(500).send(errorHtml);
-    }
-
-    return;
+    res.setHeader("Content-Type", "text/html");
+    res.status(500).send(html);
   }
+
+  return;
+}
 
   // Handle POST request
   if (req.method !== "POST") {
@@ -505,13 +608,13 @@ export default async function handler(req, res) {
         message: parseError.message,
       });
     }
-    if(authparams && authparams.userid){
+    if (!!authparams && !!authparams.userid) {
       await placeOrder(payload, authparams, res);
     }
-    if(authparams1 && authparams1.userid){
+    if (!!authparams1 && !!authparams1.userid) {
       await placeOrder(payload, authparams1, res);
     }
-    if(authparams2 && authparams2.userid){
+    if (!!authparams2 && !!authparams2.userid) {
       await placeOrder(payload, authparams2, res);
     }
     await storeInFbRealtime(payload, req, res);
