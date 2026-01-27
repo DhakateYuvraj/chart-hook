@@ -29,7 +29,6 @@ try {
   console.log("Error in reading SHOONYA_USER_2", error);
 }
 
-
 // Helper to get date in YYYYMMDD format
 function getDateString() {
   const now = new Date();
@@ -131,157 +130,148 @@ const placeOrder = async (payload, userAuthParams, res) => {
     SIGNAL_TYPE = "PE";
   }
 
-  if (!SIGNAL_TYPE) {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    return res.status(405).json({
-      success: true,
-      results: `Alert name is not in list ${alert_name}`,
-    });
-  }
+  if (SIGNAL_TYPE) {
+    // Extract stocks safely
+    const stocks = payloadStocks
+      ? payloadStocks
+          .split(",")
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0)
+      : [];
 
-  // Extract stocks safely
-  const stocks = payloadStocks
-    ? payloadStocks
-        .split(",")
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0)
-    : [];
+    if (!stocks.length) {
+      console.log("❌ No stocks received");
+      return { success: false, message: "No stocks received" };
+    }
 
-  if (!stocks.length) {
-    console.log("❌ No stocks received");
-    return { success: false, message: "No stocks received" };
-  }
-
-  try {
-    // Generate TOTP
-    const twoFA = speakeasy.totp({
-      secret: userAuthParams.totp_key,
-      encoding: "base32",
-      time: Math.floor(Date.now() / 1000),
-    });
-
-    const api = new Api({});
-    api.logout();
-
-    // LOGIN with proper error handling
-    console.log("🔐 Attempting login...");
-    const loginResp = await api
-      .login({
-        ...userAuthParams,
-        twoFA,
-      })
-      .catch((loginErr) => {
-        console.error("❌ Login failed:", loginErr.message);
-        throw new Error(`Login failed: ${loginErr.message}`);
+    try {
+      // Generate TOTP
+      const twoFA = speakeasy.totp({
+        secret: userAuthParams.totp_key,
+        encoding: "base32",
+        time: Math.floor(Date.now() / 1000),
       });
 
-    if (!loginResp || loginResp.stat !== "Ok") {
-      console.error("❌ Invalid login response:", loginResp);
-      throw new Error(
-        `Login response error: ${loginResp?.emsg || "Unknown error"}`,
-      );
-    }
+      const api = new Api({});
+      api.logout();
 
-    console.log(
-      "✅ Login success:",
-      loginResp.susertoken ? "Token received" : "No token",
-    );
-
-    // Process stocks sequentially
-    const results = [];
-
-    for (const stock of stocks) {
-      try {
-        console.log(`\n📈 Processing stock: ${stock}`);
-
-        // Get future expiries
-        const expiries = await api
-          .get_future_expiries(stock, "NFO")
-          .catch((err) => {
-            console.error(
-              `⚠️ Error fetching expiries for ${stock}:`,
-              err.message,
-            );
-            return null;
-          });
-
-        if (!expiries) {
-          console.log(`❌ Failed to get expiries for ${stock}`);
-          results.push({ stock, success: false, error: "No expiries found" });
-          continue;
-        }
-
-        api.get_quotes("NFO", expiries.token).then((reply) => {
-          let optionParams = {
-            tsym: reply.tsym, // Trading symbol (URL encode if needed: encodeURIComponent("M&M"))
-            exch: "NFO", // Exchange (NFO for NSE F&O)
-            strprc: reply.lp, // Mid price for strike selection
-            cnt: 1, // 5 strikes on each side (total 20 contracts: 5CE + 5PE on each side)
-          };
-          api.get_option_chain(optionParams).then((reply) => {
-            const selectedOption =
-              reply?.values?.filter((item) => item.optt === SIGNAL_TYPE)?.[0] ||
-              {};
-            const {
-              exch = "NFO",
-              tsym = "",
-              token = "",
-              ls = 0,
-            } = selectedOption || {};
-            console.log("selectedOption +++++++++++++++", selectedOption);
-
-            api
-              .get_latest_candle("NFO", token, 1)
-              .then((latestCandle) => {
-            console.log("latestCandlelatestCandlelatestCandlelatestCandle +++++++++++++++", latestCandle);
-                let orderparams = {
-                  buy_or_sell: "B", //Buy
-                  product_type: "B", //BRACKET ORDER
-                  exchange: exch,
-                  tradingsymbol: tsym,
-                  quantity: ls,
-                  discloseqty: 0,
-                  price_type: "LMT",
-                  price: latestCandle?.close,
-                  bookprofit_price: latestCandle?.close * 1.1,
-                  bookloss_price: latestCandle?.close * 0.9,
-                };
-                console.log("orderparams +++++++++++++++", orderparams);
-                api.place_order(orderparams).then((reply) => {
-                  results.push({ stock, success: true, reply: reply });
-                  api.logout();
-                  return
-                });
-              })
-              .catch((error) => {
-                console.error("Error:", error.message);
-              });
-          });
+      // LOGIN with proper error handling
+      console.log("🔐 Attempting login...");
+      const loginResp = await api
+        .login({
+          ...userAuthParams,
+          twoFA,
+        })
+        .catch((loginErr) => {
+          console.error("❌ Login failed:", loginErr.message);
+          throw new Error(`Login failed: ${loginErr.message}`);
         });
-      } catch (stockError) {
-        console.error(`❌ Error processing ${stock}:`, stockError.message);
-        results.push({ stock, success: false, error: stockError.message });
+
+      if (!loginResp || loginResp.stat !== "Ok") {
+        console.error("❌ Invalid login response:", loginResp);
+        throw new Error(
+          `Login response error: ${loginResp?.emsg || "Unknown error"}`,
+        );
       }
 
-      // Add delay between stocks to avoid rate limiting
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      console.log(
+        "✅ Login success:",
+        loginResp.susertoken ? "Token received" : "No token",
+      );
+
+      // Process stocks sequentially
+      const results = [];
+
+      for (const stock of stocks) {
+        try {
+          console.log(`\n📈 Processing stock: ${stock}`);
+
+          // Get future expiries
+          const expiries = await api
+            .get_future_expiries(stock, "NFO")
+            .catch((err) => {
+              console.error(
+                `⚠️ Error fetching expiries for ${stock}:`,
+                err.message,
+              );
+              return null;
+            });
+
+          if (!expiries) {
+            console.log(`❌ Failed to get expiries for ${stock}`);
+            results.push({ stock, success: false, error: "No expiries found" });
+            continue;
+          }
+
+          api.get_quotes("NFO", expiries.token).then((reply) => {
+            let optionParams = {
+              tsym: reply.tsym, // Trading symbol (URL encode if needed: encodeURIComponent("M&M"))
+              exch: "NFO", // Exchange (NFO for NSE F&O)
+              strprc: reply.lp, // Mid price for strike selection
+              cnt: 1, // 5 strikes on each side (total 20 contracts: 5CE + 5PE on each side)
+            };
+            api.get_option_chain(optionParams).then((reply) => {
+              const selectedOption =
+                reply?.values?.filter(
+                  (item) => item.optt === SIGNAL_TYPE,
+                )?.[0] || {};
+              const {
+                exch = "NFO",
+                tsym = "",
+                token = "",
+                ls = 0,
+              } = selectedOption || {};
+              console.log("selectedOption +++++++++++++++", selectedOption);
+
+              api
+                .get_latest_candle("NFO", token, 1)
+                .then((latestCandle) => {
+                  console.log(
+                    "latestCandlelatestCandlelatestCandlelatestCandle +++++++++++++++",
+                    latestCandle,
+                  );
+                  let orderparams = {
+                    buy_or_sell: "B", //Buy
+                    product_type: "B", //BRACKET ORDER
+                    exchange: exch,
+                    tradingsymbol: tsym,
+                    quantity: ls,
+                    discloseqty: 0,
+                    price_type: "LMT",
+                    price: latestCandle?.close,
+                    bookprofit_price: latestCandle?.close * 1.1,
+                    bookloss_price: latestCandle?.close * 0.9,
+                  };
+                  console.log("orderparams +++++++++++++++", orderparams);
+                  api.place_order(orderparams).then((reply) => {
+                    results.push({ stock, success: true, reply: reply });
+                    api.logout();
+                    return;
+                  });
+                })
+                .catch((error) => {
+                  console.error("Error:", error.message);
+                });
+            });
+          });
+        } catch (stockError) {
+          console.error(`❌ Error processing ${stock}:`, stockError.message);
+          results.push({ stock, success: false, error: stockError.message });
+        }
+
+        // Add delay between stocks to avoid rate limiting
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    } catch (error) {
+      console.error("❌ Shoonya order flow failed:", error.message);
+      console.error("Full error:", error);
+
+      return {
+        success: false,
+        error: error.message,
+        stack: process.env.NODE_ENV === "development" ? error.stack : undefined,
+      };
     }
-
-    console.log("\n📊 Processing complete:", results);
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    return res.status(200).json({
-      success: true,
-      results,
-    });
-  } catch (error) {
-    console.error("❌ Shoonya order flow failed:", error.message);
-    console.error("Full error:", error);
-
-    return {
-      success: false,
-      error: error.message,
-      stack: process.env.NODE_ENV === "development" ? error.stack : undefined,
-    };
   }
 };
 
@@ -294,23 +284,23 @@ export default async function handler(req, res) {
     return res.status(200).end();
   }
 
-// Handle GET request - Show simple HTML status page
-if (req.method === "GET") {
-  const startTime = Date.now();
-  const todayDate = getDateString();
+  // Handle GET request - Show simple HTML status page
+  if (req.method === "GET") {
+    const startTime = Date.now();
+    const todayDate = getDateString();
 
-  try {
-    const firebaseTest = await firebasePool.testConnection();
-    const connectionTime = Date.now() - startTime;
+    try {
+      const firebaseTest = await firebasePool.testConnection();
+      const connectionTime = Date.now() - startTime;
 
-    const envInfo = {
-      nodeVersion: process.version,
-      firebaseConfigured: !!process.env.FIREBASE_SERVICE_ACCOUNT,
-      firebaseUrl: process.env.FIREBASE_DATABASE_URL || "Not set",
-      todayDate: todayDate,
-    };
+      const envInfo = {
+        nodeVersion: process.version,
+        firebaseConfigured: !!process.env.FIREBASE_SERVICE_ACCOUNT,
+        firebaseUrl: process.env.FIREBASE_DATABASE_URL || "Not set",
+        todayDate: todayDate,
+      };
 
-    const html = `
+      const html = `
     <!DOCTYPE html>
     <html>
     <head>
@@ -332,10 +322,10 @@ if (req.method === "GET") {
                 <!-- Status Info -->
                 <div class="row mb-4">
                   <div class="col-md-6">
-                    <div class="alert ${firebaseTest.connected ? 'alert-success' : 'alert-danger'}">
+                    <div class="alert ${firebaseTest.connected ? "alert-success" : "alert-danger"}">
                       <h4 class="alert-heading">
-                        <i class="fas ${firebaseTest.connected ? 'fa-check-circle' : 'fa-times-circle'} me-2"></i>
-                        Firebase: ${firebaseTest.connected ? 'Connected' : 'Failed'}
+                        <i class="fas ${firebaseTest.connected ? "fa-check-circle" : "fa-times-circle"} me-2"></i>
+                        Firebase: ${firebaseTest.connected ? "Connected" : "Failed"}
                       </h4>
                       <p class="mb-1">${firebaseTest.message}</p>
                       <small class="text-muted">Connection time: ${connectionTime}ms</small>
@@ -445,15 +435,19 @@ if (req.method === "GET") {
 
       <script>
         // Initialize with example data
-        const exampleData = ${JSON.stringify({
-          alert_name: "CE-23.3 StockFnO Buy Yuvraj",
-          scan_name: "CE-23.3 StockFnO Buy Yuvraj",
-          scan_url: "CE-23.3 StockFnO Buy Yuvraj",
-          stocks: "INFY",
-          trigger_prices: "1670",
-          triggered_at: "11:07 am",
-          webhook_url: "https://chartink-webhook.vercel.app/api/webhook"
-        }, null, 2)};
+        const exampleData = ${JSON.stringify(
+          {
+            alert_name: "CE-23.3 StockFnO Buy Yuvraj",
+            scan_name: "CE-23.3 StockFnO Buy Yuvraj",
+            scan_url: "CE-23.3 StockFnO Buy Yuvraj",
+            stocks: "INFY",
+            trigger_prices: "1670",
+            triggered_at: "11:07 am",
+            webhook_url: "https://chartink-webhook.vercel.app/api/webhook",
+          },
+          null,
+          2,
+        )};
         
         document.getElementById('jsonInput').value = JSON.stringify(exampleData, null, 2);
         
@@ -547,12 +541,12 @@ if (req.method === "GET") {
     </html>
     `;
 
-    res.setHeader("Content-Type", "text/html");
-    res.status(200).send(html);
-  } catch (error) {
-    console.error("GET handler error:", error);
+      res.setHeader("Content-Type", "text/html");
+      res.status(200).send(html);
+    } catch (error) {
+      console.error("GET handler error:", error);
 
-    const html = `
+      const html = `
     <html class="h-100">
     <head>
       <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
@@ -581,12 +575,12 @@ if (req.method === "GET") {
     </html>
     `;
 
-    res.setHeader("Content-Type", "text/html");
-    res.status(500).send(html);
-  }
+      res.setHeader("Content-Type", "text/html");
+      res.status(500).send(html);
+    }
 
-  return;
-}
+    return;
+  }
 
   // Handle POST request
   if (req.method !== "POST") {
